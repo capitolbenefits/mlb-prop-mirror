@@ -15,6 +15,10 @@ Files written:
   data/gamelog/<playerId>-pitching.json  season pitching gameLog for every
                                          probable pitcher seen in a rolling
                                          4-day window (covers grading)
+  data/bullpen-summary.json              per-team reliever usage over the
+                                         trailing 3 days (pitch counts,
+                                         back-to-back flags) for the
+                                         bullpen-fatigue factor
 """
 
 import json
@@ -34,6 +38,11 @@ GAMELOG_DIR = os.path.join(DATA, "gamelog")
 # Days back to hydrate slates so prior pending picks always have their
 # probable pitcher's gameLog mirrored before the next-morning grade.
 LOOKBACK_DAYS = 4
+
+# Bullpen factor: trailing days of reliever usage to summarize, and the
+# yesterday-pitch-count at/above which a reliever is flagged as taxed.
+BULLPEN_LOOKBACK_DAYS = 3
+HEAVY_PITCH_THRESHOLD = 30
 
 
 def fetch(url, tries=3):
@@ -67,6 +76,56 @@ def probable_pitcher_ids(schedule_json):
                 if pid:
                     ids.add(int(pid))
     return ids
+
+
+def team_ids_playing_today(schedule_json):
+    ids = {}
+    for d in schedule_json.get("dates", []):
+        for g in d.get("games", []):
+            for side in ("away", "home"):
+                t = g.get("teams", {}).get(side, {}).get("team", {})
+                if t.get("id"):
+                    ids[int(t["id"])] = t.get("name", str(t["id"]))
+    return ids
+
+
+def usage_in_window(gamelog_json, window_dates):
+    out = []
+    for grp in gamelog_json.get("stats", []):
+        for sp in grp.get("splits", []):
+            dt = sp.get("date")
+            if dt in window_dates:
+                st = sp.get("stat", {})
+                out.append({
+                    "date": dt,
+                    "pitches": st.get("numberOfPitches") or 0,
+                    "ip": st.get("inningsPitched") or "0.0",
+                    "started": (st.get("gamesStarted") or 0) > 0,
+                })
+    return out
+
+
+def build_team_bullpen(team_name, reliever_rows, yesterday, day_before):
+    relievers = []
+    flags = []
+    for pid, name, apps in reliever_rows:
+        relief = [a for a in apps if not a["started"]]
+        if not relief:
+            continue
+        dates = {a["date"] for a in relief}
+        y_p = sum(a["pitches"] for a in relief if a["date"] == yesterday)
+        b2b = yesterday in dates and day_before in dates
+        relievers.append({
+            "id": pid, "name": name,
+            "appearances": relief,
+            "pitchesYesterday": y_p,
+            "backToBack": b2b,
+        })
+        if b2b:
+            flags.append(f"{name}: back-to-back days")
+        if y_p >= HEAVY_PITCH_THRESHOLD:
+            flags.append(f"{name}: {y_p} pitches yesterday")
+    return {"team": team_name, "relievers": relievers, "fatigueFlags": flags}
 
 
 def main():
@@ -107,6 +166,7 @@ def main():
             errors.append(f"lookback {d.isoformat()}: {e}")
 
     written_logs = []
+    gamelog_cache = {}
     for pid in sorted(pitcher_ids):
         url = (
             f"{BASE}/people/{pid}/stats?stats=gameLog"
@@ -116,8 +176,54 @@ def main():
             gl = fetch(url)
             write_json(os.path.join(GAMELOG_DIR, f"{pid}-pitching.json"), gl)
             written_logs.append(pid)
+            gamelog_cache[pid] = gl
         except Exception as e:  # noqa: BLE001
             errors.append(f"gamelog {pid}: {e}")
+
+    # ---- bullpen usage summary (per team playing today) ----
+    window = {
+        (today_et - timedelta(days=b)).isoformat()
+        for b in range(1, BULLPEN_LOOKBACK_DAYS + 1)
+    }
+    y1 = yesterday_et.isoformat()
+    y2 = (today_et - timedelta(days=2)).isoformat()
+    bullpen = {}
+    for tid, tname in sorted(team_ids_playing_today(sched_today).items()):
+        try:
+            roster = fetch(f"{BASE}/teams/{tid}/roster?rosterType=active")
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"roster {tid}: {e}")
+            continue
+        rows = []
+        for entry in roster.get("roster", []):
+            if entry.get("position", {}).get("code") != "1":
+                continue
+            pid = entry.get("person", {}).get("id")
+            name = entry.get("person", {}).get("fullName", str(pid))
+            if not pid:
+                continue
+            pid = int(pid)
+            gl = gamelog_cache.get(pid)
+            if gl is None:
+                url = (
+                    f"{BASE}/people/{pid}/stats?stats=gameLog"
+                    f"&season={season}&group=pitching"
+                )
+                try:
+                    gl = fetch(url)
+                    gamelog_cache[pid] = gl
+                except Exception as e:  # noqa: BLE001
+                    errors.append(f"bullpen gamelog {pid}: {e}")
+                    continue
+            apps = usage_in_window(gl, window)
+            if apps:
+                rows.append((pid, name, apps))
+        bullpen[str(tid)] = build_team_bullpen(tname, rows, y1, y2)
+    write_json(os.path.join(DATA, "bullpen-summary.json"), {
+        "windowDays": BULLPEN_LOOKBACK_DAYS,
+        "yesterday": y1,
+        "teams": bullpen,
+    })
 
     manifest = {
         "generated_at": now_utc.isoformat(),
@@ -128,6 +234,8 @@ def main():
         "schedule_today": "data/schedule-today.json",
         "schedule_week": "data/schedule-week.json",
         "gamelog_dir": "data/gamelog",
+        "bullpen_summary": "data/bullpen-summary.json",
+        "bullpen_team_count": len(bullpen),
         "pitcher_gamelogs": [f"data/gamelog/{p}-pitching.json" for p in written_logs],
         "pitcher_count": len(written_logs),
         "errors": errors,

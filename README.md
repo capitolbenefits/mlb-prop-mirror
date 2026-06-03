@@ -60,9 +60,15 @@ baseball season.
 | `data/schedule-today.json` | today's hydrated slate (probablePitcher, team, venue, officials) |
 | `data/schedule-week.json` | league-wide trailing-7-day schedule (rest / travel) |
 | `data/gamelog/<playerId>-pitching.json` | season pitching gameLog for each probable pitcher in a rolling 4-day window (used to grade K props) |
+| `data/bullpen-summary.json` | per-team reliever usage over the trailing 3 days: pitch counts, back-to-back flags, fatigue notes (powers the bullpen factor) |
 
 ## Extending
 
 Only **pitching** gameLogs are mirrored today (the model is pitcher-strikeout
 focused). To grade hitter props, add hitter gameLog fetches in `fetch_mlb.py`
 for the relevant `personId`s and `group=hitting`.
+
+Bullpen usage is summarized from active-roster pitchers' gameLogs (no boxscore
+fetches needed): each team playing today gets its relievers' trailing-3-day
+appearances, pitch counts, and back-to-back flags precomputed into
+`data/bullpen-summary.json`.
