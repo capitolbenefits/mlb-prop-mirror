@@ -1,0 +1,47 @@
+name: mlb-prop-mirror
+
+# Fetches the MLB statsapi data the prop-top3 task needs and commits it as JSON.
+# GitHub runners have full internet, so statsapi is reachable here even though
+# the Cowork sandbox cannot reach it directly.
+
+on:
+  workflow_dispatch: {}        # allow manual runs from the Actions tab
+  schedule:
+    # Times are UTC. Baseball season runs on US Eastern Daylight (UTC-4).
+    - cron: "30 7 * * *"       # ~03:30 ET: capture finals of West Coast night games
+    - cron: "50 9 * * *"       # ~05:50 ET: fresh before the 6 AM ET task run
+    - cron: "50 18 * * *"      # ~14:50 ET: fresh before the 3 PM ET task run
+
+permissions:
+  contents: write              # needed to commit the refreshed JSON
+
+concurrency:
+  group: mlb-prop-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Fetch statsapi data
+        run: python fetch_mlb.py
+
+      - name: Commit refreshed data
+        run: |
+          git config user.name  "mlb-mirror-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "mirror: refresh statsapi data ($(date -u +%FT%TZ))"
+            git push
+          fi
