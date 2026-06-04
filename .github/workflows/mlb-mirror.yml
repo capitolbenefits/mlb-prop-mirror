@@ -10,7 +10,9 @@ on:
     # Times are UTC. Baseball season runs on US Eastern Daylight (UTC-4).
     - cron: "30 7 * * *"       # ~03:30 ET: capture finals of West Coast night games
     - cron: "50 9 * * *"       # ~05:50 ET: fresh before the 6 AM ET task run
+    - cron: "10 9 * * *"        # ~05:10 ET: primary refresh before the 6 AM ET task run
     - cron: "50 18 * * *"      # ~14:50 ET: fresh before the 3 PM ET task run
+    - cron: "10 18 * * *"       # ~14:10 ET: primary refresh before the 3 PM ET task run
 
 permissions:
   contents: write              # needed to commit the refreshed JSON
